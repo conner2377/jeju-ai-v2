@@ -1,0 +1,50 @@
+# 혼디 제주 · 무장애 여행 (v2)
+
+'혼디'는 '함께'를 뜻하는 제주어예요.
+
+시니어·장애인 여행자의 신체 조건, 인지감성(기분·원하는 분위기), 이동 제약, 무장애 관광 정보를 함께 읽어
+맞춤 코스 추천, 트래블헬퍼 매칭, 여행 중 안전·컨디션 케어를 제공하는 Streamlit 웹앱입니다.
+
+## 실행
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+AI 안내문(선택)을 쓰려면 `.streamlit/secrets.toml.example`을 `.streamlit/secrets.toml`로 복사해 `GOOGLE_API_KEY`를 넣으세요.
+키가 없어도 추천·케어·매칭은 모두 규칙 기반 엔진으로 동작합니다.
+
+## 구조
+
+```
+app.py                 상단 바·내비게이션·화면 라우팅
+core/
+  data.py              두 CSV를 하나의 장소 스키마로 통합 (시설 11종, 분위기 태그, 실내 여부, 권역, 접근성 점수)
+  recommender.py       맞춤 코스 엔진 (적합도 → 하루 단위 묶기 → 점심·카페 삽입 → 체력 기반 시간표) + 테마 코스
+  condition.py         컨디션 판단 엔진 (심박·SpO2·스트레스·수면·활동·기온·피로·기분 → 점수·4단계·행동 지침·대체 장소·응급실)
+  helpers.py           트래블헬퍼 매칭 + 더미 헬퍼 서버 (수락·출발·도착·체크인 메시지, 후기→평점 반영)
+  wearable.py          가상 웨어러블 (연결 흐름, 3초마다 생체 신호 생성, 낙상 이벤트)
+  mobility.py          더미 배차 서버 (호출 시각 기준 배차→접근→탑승→운행→하차 자동 진행)
+  llm.py               (선택) Gemini 코스 안내문. 엔진이 고른 장소만 전달
+  state.py, config.py  세션 상태, 설정·비밀 값 로딩
+ui/                    디자인 시스템(theme), 공통 컴포넌트, 아이콘, 지도
+views/                 홈 · 코스 추천 · 장소 찾기 · 안심 케어 · 동행 헬퍼 · 이동 지원 · 내 여행
+data/                  tour_data.csv(큐레이션), api_tour_data.csv(관광공사 API)
+scripts/collect_tour_data.py   관광공사 무장애 API 재수집 (TOUR_API_KEY 환경 변수 필요)
+```
+
+## 더미 데이터로 동작하는 부분
+
+웨어러블, 현재 위치, 차량 배차, 헬퍼는 더미 데이터로 실제처럼 동작합니다(시간은 시연용으로 압축).
+보호자·헬퍼 알림은 '보낸 알림'에 기록만 되고 실제 문자는 발송되지 않습니다. 실제 연동 시 교체할 곳:
+
+- 웨어러블: `core/wearable.py`의 `WearableStream.tick()` → 기기 SDK/헬스 플랫폼 수신값
+- 알림 발송: `core/state.py`의 `notify()` → 문자·푸시 API
+- 지도: OpenStreetMap 타일(키 불필요), 도로 경로는 OSRM 공개 서버(실패 시 직선). 서비스 규모가 커지면 자체 타일/경로 서버로 바꾸세요.
+- 위치: `core/config.py`의 `DEMO_GPS` → 브라우저/모바일 GPS
+- 배차: `core/mobility.py` → 교통약자 이동지원센터 API. 센터 번호는 `MOBILITY_CENTER_TEL`에 확인 후 입력
+- 헬퍼: `core/helpers.py`의 `HELPERS` → DB
+- 응급실 좌표(`core/condition.py`)는 지도 표시용 근사값입니다.
+
+저장한 코스·예약은 브라우저 세션에만 남습니다(새로고침 시 초기화). 여러 사용자가 쓰려면 DB 연동이 필요합니다.

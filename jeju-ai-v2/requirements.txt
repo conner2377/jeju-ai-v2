@@ -1,0 +1,4 @@
+streamlit>=1.42
+pandas>=2.0
+langchain-google-genai>=2.0   # 선택: AI 안내문
+requests>=2.31                # 데이터 수집 스크립트
