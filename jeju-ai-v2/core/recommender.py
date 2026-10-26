@@ -186,6 +186,7 @@ class Stop:
     travel_min: int
     travel_km: float
     tips: list
+    note: str = ""  # AI 추천 이유 (AI 코스일 때만)
 
 
 @dataclass
@@ -378,6 +379,34 @@ def plan_from_names(places: list[Place], names: list[str], prof: TravelerProfile
     stamina = STAMINA.get(prof.stamina, 0.5)
     stops, end, km, tm = _schedule(seq, prof, "휠체어" in prof.mobility, 1.25 - 0.25 * stamina, int(20 - 10 * stamina))
     return [DayPlan(1, stops, round(km, 1), tm, _fmt(end))]
+
+
+def plan_from_ai(places: list[Place], days: list[list[dict]], prof: TravelerProfile) -> list[DayPlan]:
+    """AI가 고른 장소 이름(일차별)을 데이터베이스와 대조해 시간표·팁을 붙입니다. 없는 장소는 버립니다."""
+    from core.data import find
+
+    relaxed = TravelerProfile(**{**prof.__dict__, "must_have": []})
+    stamina = STAMINA.get(prof.stamina, 0.5)
+    plans, used = [], set()
+    for stops in days:
+        seq, notes = [], []
+        for item in stops:
+            p = find(places, str(item.get("name", "")).strip())
+            if not p or p.id in used:
+                continue
+            used.add(p.id)
+            kind = "meal" if p.category == "맛집" else "cafe" if p.category == "카페" else "sight"
+            seq.append((kind, score_place(p, relaxed)))
+            notes.append((str(item.get("why", "")).strip(), str(item.get("tip", "")).strip()))
+        if not seq:
+            continue
+        stops_out, end, km, tm = _schedule(seq, prof, "휠체어" in prof.mobility, 1.25 - 0.25 * stamina, int(20 - 10 * stamina))
+        for st_, (why, tip) in zip(stops_out, notes):
+            st_.note = why
+            if tip:
+                st_.tips = [f"AI 팁 · {tip}"] + st_.tips[:3]
+        plans.append(DayPlan(len(plans) + 1, stops_out, round(km, 1), tm, _fmt(end)))
+    return plans
 
 
 THEMES = [

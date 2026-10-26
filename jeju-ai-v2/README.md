@@ -12,8 +12,10 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-AI 안내문(선택)을 쓰려면 `.streamlit/secrets.toml.example`을 `.streamlit/secrets.toml`로 복사해 `GOOGLE_API_KEY`를 넣으세요.
-키가 없어도 추천·케어·매칭은 모두 규칙 기반 엔진으로 동작합니다.
+코스 추천의 핵심은 **인지감성 AI 추천(Gemini)**입니다. `.streamlit/secrets.toml.example`을 `.streamlit/secrets.toml`로 복사해 `GOOGLE_API_KEY`를 넣으세요.
+흐름: 조건·지금 기분·원하는 분위기 입력 → AI가 테마 3개 제안 → 선택하면 AI가 일정 작성 → "2일차는 실내로" 같은 수정 요청 반영.
+AI에는 장소 데이터베이스(시설·인지감성·주의 사항)를 함께 넘기고, 돌아온 장소는 데이터와 대조해 없는 장소는 버립니다.
+키가 없거나 호출이 실패하면 규칙 기반 엔진으로 대신 일정을 짭니다. 케어·매칭은 규칙 기반으로 동작합니다.
 
 ## 구조
 
@@ -26,7 +28,7 @@ core/
   helpers.py           트래블헬퍼 매칭 + 더미 헬퍼 서버 (수락·출발·도착·체크인 메시지, 후기→평점 반영)
   wearable.py          가상 웨어러블 (연결 흐름, 3초마다 생체 신호 생성, 낙상 이벤트)
   mobility.py          더미 배차 서버 (호출 시각 기준 배차→접근→탑승→운행→하차 자동 진행)
-  llm.py               (선택) Gemini 코스 안내문. 엔진이 고른 장소만 전달
+  llm.py               인지감성 AI 코스 추천 (테마 3개 제안 → 일정 작성 → 수정 요청). 장소는 데이터베이스와 대조
   state.py, config.py  세션 상태, 설정·비밀 값 로딩
 ui/                    디자인 시스템(theme), 공통 컴포넌트, 아이콘, 지도
 views/                 홈 · 코스 추천 · 장소 찾기 · 안심 케어 · 동행 헬퍼 · 이동 지원 · 내 여행

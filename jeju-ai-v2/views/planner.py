@@ -5,7 +5,7 @@ import streamlit as st
 from core import llm
 from core.data import FACILITIES, MOODS, ZONES
 from core.recommender import (MOBILITY_TYPES, PACE, THEMES, TravelerProfile, build_itinerary, parse_request,
-                              plan_from_names, plan_summary, plan_to_text)
+                              plan_from_ai, plan_from_names, plan_summary, plan_to_text)
 from core.state import go
 from ui.components import banner, chips, esc, map_links, md, page_head, section, stat
 from ui.icons import icon
@@ -28,6 +28,7 @@ def _defaults():
     ss.setdefault("pl_zone", "전체")
     ss.setdefault("pl_indoor", False)
     ss.setdefault("pl_req", "")
+    ss.setdefault("pl_feel", "편안해요")
 
 
 def _timeline(day) -> str:
@@ -46,6 +47,7 @@ def _timeline(day) -> str:
           <div class='tl-time'>{s.arrive} · {KIND_LABEL[s.kind]} {s.stay_min}분{f" &nbsp;{icon('utensils' if s.kind == 'meal' else 'coffee', 15)}" if s.kind != 'sight' else ''}</div>
           <h4>{esc(p.name)}</h4>
           <div style='font-size:15px;color:var(--ink-4)'>{esc(p.address)}</div>
+          {f"<div class='tl-note'>{icon('spark', 16)}<span>{esc(s.note)}</span></div>" if s.note else ''}
           {chips(s.scored.reasons, 'brand')}{warn}
           {f"<ul class='tl-tips'>{tips}</ul>" if tips else ''}
           <div style='display:flex;gap:16px;margin-top:12px;font-size:15px;font-weight:600'>
@@ -76,6 +78,23 @@ def render_plan(plans, key: str) -> None:
                 md(f"<div style='font-size:15px;color:var(--ink-4);margin-top:8px'>10:00 출발 · {d.end_time} 일정 종료 예상 · 장소 사이 휴식 시간 포함</div>")
 
 
+def _profile_from_inputs() -> TravelerProfile:
+    ss = st.session_state
+    prof = TravelerProfile(
+        mobility=list(ss.pl_mob or []), stamina=ss.pl_stamina or "보통", moods=list(ss.pl_moods or ["안정"]),
+        must_have=list(ss.pl_must or []), prefer_indoor=bool(ss.pl_indoor), zone=ss.pl_zone or "전체",
+        days=DAYS.get(ss.pl_days or "당일", 1), pace=ss.pl_pace or "적당히", request=ss.pl_req.strip(),
+    )
+    return parse_request(prof.request, prof)
+
+
+def _rule_plan(places, prof, notice: str = ""):
+    with st.spinner("조건에 맞는 장소와 동선을 고르고 있어요"):
+        plans = build_itinerary(places, prof)
+    st.session_state.plan = {"plans": plans, "profile": prof, "ai": "", "title": _title(prof), "source": "rule",
+                             "notice": notice, "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+
 def _builder(places):
     _defaults()
     ss = st.session_state
@@ -86,6 +105,7 @@ def _builder(places):
             st.segmented_control("체력", ["낮음", "보통", "높음"], key="pl_stamina")
         with c2:
             st.segmented_control("여행 기간", list(DAYS), key="pl_days")
+        st.pills("지금 기분은 어떠세요?", list(llm.FEELINGS), key="pl_feel", help="AI가 지금 마음에 맞는 장소의 분위기를 골라 드려요")
         st.pills("어떤 분위기를 원하세요?", list(MOODS), selection_mode="multi", key="pl_moods", format_func=lambda m: f"{m} · {MOODS[m]}")
         st.pills("꼭 있어야 하는 시설", MUST, selection_mode="multi", key="pl_must", format_func=lambda k: FACILITIES[k])
         c1, c2, c3 = st.columns([1, 1, 1], vertical_alignment="bottom")
@@ -95,19 +115,60 @@ def _builder(places):
             st.selectbox("지역", ["전체"] + ZONES, key="pl_zone")
         with c3:
             st.toggle("실내 위주로", key="pl_indoor", help="비나 더위가 걱정될 때 켜 주세요")
-        st.text_input("더 알려주실 것이 있나요? (선택)", key="pl_req", placeholder="예) 아버지가 전복을 좋아하셔요. 바다를 보고 싶어요.")
-        go_clicked = st.button("코스 만들기", type="primary", use_container_width=True, icon=":material/route:")
+        st.text_input("AI에게 더 알려 주실 것이 있나요? (선택)", key="pl_req", placeholder="예) 아버지가 전복을 좋아하셔요. 요즘 기운이 없으셔서 바다를 보여 드리고 싶어요.")
+        go_clicked = st.button("AI 코스 추천받기", type="primary", use_container_width=True, icon=":material/auto_awesome:")
+        if not llm.available():
+            md("<div style='font-size:15px;color:var(--ink-4);margin-top:8px'>AI 키(GOOGLE_API_KEY)가 없어서 지금은 규칙 기반 엔진으로 추천해요.</div>")
 
     if go_clicked:
-        prof = TravelerProfile(
-            mobility=list(ss.pl_mob or []), stamina=ss.pl_stamina or "보통", moods=list(ss.pl_moods or ["안정"]),
-            must_have=list(ss.pl_must or []), prefer_indoor=bool(ss.pl_indoor), zone=ss.pl_zone or "전체",
-            days=DAYS.get(ss.pl_days or "당일", 1), pace=ss.pl_pace or "적당히", request=ss.pl_req.strip(),
-        )
-        prof = parse_request(prof.request, prof)
-        with st.spinner("조건에 맞는 장소와 동선을 고르고 있어요"):
-            plans = build_itinerary(places, prof)
-        ss.plan = {"plans": plans, "profile": prof, "ai": "", "title": _title(prof), "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        prof = _profile_from_inputs()
+        feeling = ss.pl_feel or ""
+        ss.plan = None
+        ss.ai_opts = None
+        if not llm.available():
+            _rule_plan(places, prof, "AI 키가 설정되지 않아 규칙 기반 엔진으로 일정을 짰어요. 키를 넣으면 인지감성 AI 추천으로 바뀌어요.")
+            return
+        with st.spinner("AI가 지금 기분과 몸 상태에 맞는 테마 3가지를 고르고 있어요"):
+            try:
+                ss.ai_opts = {"prof": prof, "feeling": feeling, "themes": llm.suggest_themes(places, prof, feeling)}
+            except Exception as e:  # 네트워크·키·응답 형식 오류
+                _rule_plan(places, prof, f"AI 응답을 받지 못해 규칙 기반 엔진으로 일정을 짰어요. ({type(e).__name__})")
+
+
+def _make_ai_plan(places, prof, feeling, theme, previous="", feedback="", history=None):
+    ss = st.session_state
+    try:
+        res = llm.plan_course(places, prof, feeling, theme, previous, feedback)
+        plans = plan_from_ai(places, res["days"], prof)
+    except Exception as e:
+        st.error(f"AI 일정을 만들지 못했어요. 잠시 뒤 다시 시도해 주세요. ({type(e).__name__})")
+        return False
+    if not plans:
+        st.error("AI가 고른 장소를 데이터에서 찾지 못했어요. 다시 시도해 주세요.")
+        return False
+    ss.plan = {"plans": plans, "profile": prof, "ai": res["briefing"], "title": res["title"], "source": "ai", "theme": theme,
+               "feeling": feeling, "history": list(history or []) + ([feedback] if feedback else []),
+               "created": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    return True
+
+
+def _theme_picker(places):
+    ss = st.session_state
+    opts = ss.get("ai_opts")
+    if not opts or ss.plan:
+        return
+    section("AI가 고른 테마", f"지금 기분 · {opts['feeling'] or '선택 안 함'}")
+    cols = st.columns(len(opts["themes"]) or 1)
+    for i, (col, t) in enumerate(zip(cols, opts["themes"])):
+        with col:
+            mood = f"<span class='chip brand'>{esc(t['mood'])} · {esc(MOODS[t['mood']])}</span>" if t.get("mood") else ""
+            route = f"<div class='meta' style='margin-top:12px'>{esc(' → '.join(t['places']))}</div>" if t["places"] else ""
+            md(f"<div class='card ai-theme'><span class='eyebrow'>{icon('spark', 14)} 테마 {i + 1}</span>"
+               f"<h4>{esc(t['title'])}</h4><p>{esc(t['summary'])}</p>{mood}{route}</div>")
+            if st.button("이 테마로 코스 만들기", key=f"ai_theme_{i}", use_container_width=True, type="primary" if i == 0 else "secondary"):
+                with st.spinner("AI가 장소마다 무장애 정보를 확인하며 일정을 짜고 있어요"):
+                    if _make_ai_plan(places, opts["prof"], opts["feeling"], t):
+                        st.rerun()
 
 
 def _title(prof: TravelerProfile) -> str:
@@ -117,15 +178,27 @@ def _title(prof: TravelerProfile) -> str:
     return f"{zone}{span} {prof.moods[0] if prof.moods else ''} 여행 ({who})"
 
 
-def _result():
+def _result(places):
     ss = st.session_state
     plan = ss.plan
     if not plan:
         return
+    if plan.get("notice"):
+        banner("info", "규칙 기반으로 추천했어요", plan["notice"], "spark")
+        st.write("")
     if not plan["plans"]:
         banner("caution", "조건에 맞는 장소를 찾지 못했어요", "꼭 있어야 하는 시설이나 지역 조건을 조금 줄여 보세요.")
         return
-    section(plan["title"], plan["created"])
+    is_ai = plan.get("source") == "ai"
+    section(plan["title"], ("AI 추천 · " if is_ai else "") + plan["created"])
+    if is_ai and plan.get("ai"):
+        with st.container(key="panel_ai"):
+            t = plan.get("theme", {})
+            md(f"<div style='display:flex;gap:8px;align-items:center;font-weight:700;color:var(--ink);margin-bottom:8px'>{icon('spark', 18, 'var(--brand)')} AI 여행 브리핑</div>"
+               f"<div style='font-size:17px;color:var(--ink-2);line-height:1.65'>{esc(plan['ai'])}</div>"
+               + chips([x for x in [f"지금 기분 · {plan.get('feeling')}" if plan.get("feeling") else "", f"테마 · {t.get('title', '')}" if t.get("title") else ""] if x], "brand")
+               + (chips([f"수정 요청 · {h}" for h in plan.get("history", [])]) if plan.get("history") else ""))
+        st.write("")
     render_plan(plan["plans"], key="plan")
 
     c1, c2, c3 = st.columns(3)
@@ -136,20 +209,23 @@ def _result():
     with c2:
         st.button("이 일정에 동행 헬퍼 찾기", use_container_width=True, on_click=go, args=("동행 헬퍼",), icon=":material/group:")
     with c3:
-        ai_ok = llm.available()
-        if st.button("AI 안내문 받기", use_container_width=True, disabled=not ai_ok, icon=":material/auto_awesome:",
-                     help=None if ai_ok else "GOOGLE_API_KEY를 설정하면 사용할 수 있어요"):
-            with st.spinner("일정을 바탕으로 안내문을 쓰고 있어요"):
-                try:
-                    p = plan["profile"]
-                    prof_text = f"이동 유형: {', '.join(p.mobility)} / 체력: {p.stamina} / 원하는 분위기: {', '.join(p.moods)} / 요청: {p.request or '없음'}"
-                    plan["ai"] = llm.explain_course(plan_to_text(plan["plans"]), prof_text)
-                except Exception as e:  # 네트워크·키 오류는 화면에 안내만
-                    st.error(f"AI 안내문을 만들지 못했어요. ({type(e).__name__})")
-    if plan.get("ai"):
-        with st.container(key="panel_ai"):
-            md(f"<div style='display:flex;gap:8px;align-items:center;font-weight:700;color:var(--ink);margin-bottom:8px'>{icon('spark', 18, 'var(--brand)')} AI 안내문</div>")
-            st.markdown(plan["ai"])
+        if is_ai and ss.get("ai_opts"):
+            if st.button("다른 테마 고르기", use_container_width=True, icon=":material/swap_horiz:"):
+                ss.plan = None
+                st.rerun()
+
+    if is_ai:
+        st.write("")
+        with st.form("ai_feedback", clear_on_submit=True, border=False), st.container(key="panel_feedback"):
+            md(f"<div style='display:flex;gap:8px;align-items:center;font-weight:700;color:var(--ink);margin-bottom:4px'>{icon('spark', 18, 'var(--brand)')} AI에게 일정 수정 요청하기</div>")
+            c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
+            fb = c1.text_input("수정 요청", placeholder="예) 2일차는 실내로 바꿔 주세요. 점심은 흑돼지가 좋아요.", label_visibility="collapsed")
+            sent = c2.form_submit_button("수정하기", type="primary", use_container_width=True)
+        if sent and fb.strip():
+            with st.spinner("AI가 요청을 반영해 일정을 다시 짜고 있어요"):
+                if _make_ai_plan(places, plan["profile"], plan.get("feeling", ""), plan.get("theme", {}),
+                                 plan_to_text(plan["plans"]), fb.strip(), plan.get("history")):
+                    st.rerun()
 
 
 @st.dialog("테마 코스", width="large")
@@ -180,10 +256,11 @@ def _themes(places):
 
 
 def render(places):
-    page_head("코스 추천", "몸 상태와 이동 방법을 알려 주시면 계단·경사를 피하고 화장실과 휴식까지 챙긴 동선을 짜 드려요.")
+    page_head("코스 추천", "몸 상태와 지금 기분을 알려 주시면 AI가 마음에 맞는 분위기의 장소를 골라, 계단·경사를 피하고 화장실과 휴식까지 챙긴 동선을 짜 드려요.")
     t1, t2 = st.tabs(["맞춤 코스 만들기", "테마 코스"])
     with t1:
         _builder(places)
-        _result()
+        _theme_picker(places)
+        _result(places)
     with t2:
         _themes(places)
